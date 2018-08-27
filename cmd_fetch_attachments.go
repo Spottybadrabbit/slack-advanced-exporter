@@ -60,16 +60,8 @@ func fetchAttachments(inputArchive string, outputArchive string) error {
 			fmt.Printf("Failed to read file in input archive: %s\n\n%s", file.Name, err)
 		}
 
-		// Now write this file to the output archive.
-		outFile, err := w.Create(file.Name)
-		if err != nil {
-			fmt.Printf("Failed to create file in output archive: %s\n\n%s", file.Name, err)
-			os.Exit(1)
-		}
-		_, err = outFile.Write(inBuf)
-		if err != nil {
-			fmt.Printf("Failed to write file in output archive: %s\n\n%s", file.Name, err)
-		}
+		// The output buffer defaults to the input if the file does not need to be edited.
+		outBuf := inBuf
 
 		// Check if the file name matches the pattern for files we need to parse.
 		splits := strings.Split(file.Name, "/")
@@ -80,6 +72,24 @@ func fetchAttachments(inputArchive string, outputArchive string) error {
 				fmt.Printf("%s", err)
 				os.Exit(1)
 			}
+
+			// Convert the file so that Mattermost can recognize the old attachment format.
+			outBuf, err = convertChannelFile(file, inBuf)
+			if err != nil {
+				fmt.Printf("%s", err)
+				os.Exit(1)
+			}
+		}
+
+		// Now write this file to the output archive.
+		outFile, err := w.Create(file.Name)
+		if err != nil {
+			fmt.Printf("Failed to create file in output archive: %s\n\n%s", file.Name, err)
+			os.Exit(1)
+		}
+		_, err = outFile.Write(outBuf)
+		if err != nil {
+			fmt.Printf("Failed to write file in output archive: %s\n\n%s", file.Name, err)
 		}
 	}
 
@@ -90,6 +100,44 @@ func fetchAttachments(inputArchive string, outputArchive string) error {
 	}
 
 	return nil
+}
+
+func convertChannelFile(file *zip.File, inBuf []byte) ([]byte, error) {
+
+	var f interface{}
+
+	// Parse the entire contents of the JSON file.
+	if err := json.Unmarshal(inBuf, &f); err != nil {
+		return nil, errors.New("Couldn't parse the JSON file: " + file.Name + "\n\n" + err.Error() + "\n")
+	}
+
+	// Convert the data to a list of interfaces that we can manipulate.
+	a := f.([]interface{})
+
+	for idx, post := range a {
+		// Convert the post to a map of interfaces.
+		m := post.(map[string]interface{})
+
+		// Handle posts that contain files.
+		if m["files"] != nil {
+			// Convert the files to a readable list of files.
+			v := m["files"].([]interface{})
+
+			// We can only keep one file for the post, so choose the first one.
+			m["file"] = v[0]
+		}
+
+		// Store the modified file back into the array.
+		a[idx] = m
+	}
+
+	// Regenerate the JSON from the modified files.
+	outBuf, err := json.MarshalIndent(a, "", "    ")
+	if err != nil {
+		return nil, errors.New("Couldn't store the JSON file: " + file.Name + "\n\n" + err.Error() + "\n")
+	}
+
+	return outBuf, nil
 }
 
 func processChannelFile(w *zip.Writer, file *zip.File, inBuf []byte) error {
